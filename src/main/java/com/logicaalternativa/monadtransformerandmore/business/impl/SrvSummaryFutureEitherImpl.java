@@ -1,7 +1,23 @@
 package com.logicaalternativa.monadtransformerandmore.business.impl;
 
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.Executors;
+
+import scala.Tuple2;
+import scala.concurrent.ExecutionContextExecutor;
+import scala.concurrent.Future;
+import scala.concurrent.Promise;
+import scala.util.Either;
+import scala.util.Right;
 import akka.dispatch.ExecutionContexts;
-import com.logicaalternativa.monadtransformerandmore.bean.*;
+import akka.dispatch.Futures;
+
+import com.logicaalternativa.monadtransformerandmore.bean.Author;
+import com.logicaalternativa.monadtransformerandmore.bean.Book;
+import com.logicaalternativa.monadtransformerandmore.bean.Chapter;
+import com.logicaalternativa.monadtransformerandmore.bean.Sales;
+import com.logicaalternativa.monadtransformerandmore.bean.Summary;
 import com.logicaalternativa.monadtransformerandmore.business.SrvSummaryFutureEither;
 import com.logicaalternativa.monadtransformerandmore.errors.Error;
 import com.logicaalternativa.monadtransformerandmore.monad.MonadFutEither;
@@ -10,17 +26,9 @@ import com.logicaalternativa.monadtransformerandmore.service.future.ServiceBookF
 import com.logicaalternativa.monadtransformerandmore.service.future.ServiceChapterFutEither;
 import com.logicaalternativa.monadtransformerandmore.service.future.ServiceSalesFutEither;
 import com.logicaalternativa.monadtransformerandmore.util.Java8;
-import scala.Tuple2;
-import scala.concurrent.ExecutionContextExecutor;
-import scala.concurrent.Future;
-import scala.util.Either;
-import scala.util.Right;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-
-import static akka.dispatch.Futures.sequence;
+import static com.logicaalternativa.monadtransformerandmore.util.Java8.*;
+import static com.logicaalternativa.monadtransformerandmore.util.TDD.$_notYetImpl;
 
 public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error> {
 
@@ -28,15 +36,16 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
 	private final ServiceSalesFutEither<Error> srvSales;
 	private final ServiceChapterFutEither<Error> srvChapter;
 	private final ServiceAuthorFutEither<Error> srvAuthor;
-
+	
 	private final MonadFutEither<Error> m;
-
-
+	
+	final ExecutionContextExecutor ec = ExecutionContexts.global();
+	
 	public SrvSummaryFutureEitherImpl(ServiceBookFutEither<Error> srvBook,
-									  ServiceSalesFutEither<Error> srvSales,
-									  ServiceChapterFutEither<Error> srvChapter,
-									  ServiceAuthorFutEither<Error> srvAuthor,
-									  MonadFutEither<Error> m) {
+			ServiceSalesFutEither<Error> srvSales,
+			ServiceChapterFutEither<Error> srvChapter,
+			ServiceAuthorFutEither<Error> srvAuthor,
+			MonadFutEither<Error> m) {
 		super();
 		this.srvBook = srvBook;
 		this.srvSales = srvSales;
@@ -47,70 +56,64 @@ public class SrvSummaryFutureEitherImpl implements SrvSummaryFutureEither<Error>
 
 	@Override
 	public Future<Either<Error, Summary>> getSummary(Integer idBook) {
-
-		Future<Either<Error, Book>> bookFuture = srvBook.getBook(idBook);
-
-		Future<Either<Error, Sales>> salesFuture = srvSales.getSales(idBook);
-
-		Future<Tuple2<Either<Error, Book>, Either<Error, Sales>>> ziper = bookFuture.zip( salesFuture);
-
-		ExecutionContextExecutor ec = ExecutionContexts.global();
-
-		Future<Either<Error, Summary>> result = getEitherSummaryFuture(ziper, ec);
-
-		return result;
-	}
-
-	private Future<Either<Error, Summary>> getEitherSummaryFuture(Future<Tuple2<Either<Error, Book>, Either<Error, Sales>>> ziper, ExecutionContextExecutor ec) {
-		return ziper.flatMap(Java8.mapperF(
-				eitherTupla -> {
-
-					final Book book = eitherTupla._1.right().get();
-
-					final Optional<Sales> sales = (eitherTupla._2.isRight() ? (Optional.of(eitherTupla._2.right().get())) : Optional.empty());
-					Future<Either<Error, Author>> authorFuture = srvAuthor.getAuthor(book.getIdAuthor());
-					Future<Either<Error, Summary>> res = getEitherAuthorFuture(ec, book, sales, authorFuture);
-
-					return res;
-				}
-		), ec);
-	}
-
-	private Future<Either<Error, Summary>> getEitherAuthorFuture(ExecutionContextExecutor ec, Book book, Optional<Sales> sales, Future<Either<Error, Author>> authorFuture) {
-		return authorFuture.flatMap(Java8.mapperF(
-				(eitherAuthor) ->{
-					final Author author = eitherAuthor.right().get();
-					final Future<Iterable<Either<Error, Chapter>>> futureListOfInts = sequence(getListChapters(book.getChapters()), ec);
-					final Future<Either<Error, Summary>> chapterFuture = getEitherChapterFuture(ec, book, sales, author, futureListOfInts);
-					return chapterFuture;
-				}
-		), ec);
-	}
-
-	private Future<Either<Error, Summary>> getEitherChapterFuture(ExecutionContextExecutor ec, Book book, Optional<Sales> sales, Author author, Future<Iterable<Either<Error, Chapter>>> futureListOfInts) {
-		return futureListOfInts.map(Java8.mapperF(
-				eitherChapter -> {
-					List<Chapter> listChapters = new ArrayList<>();
-					eitherChapter.forEach(chapter -> {
-						listChapters.add(chapter.right().get());
-					});
-					Summary summary = new Summary(book, listChapters, sales,author);
-					return new Right<Error, Summary>(summary);
-				}
-		), ec);
-	}
-
-
-	private List<Future<Either<Error, Chapter>>> getListChapters(List<Long> chapters) {
-		int lengthChapters = chapters.size();
-		List<Future<Either<Error, Chapter>>> chaptersFuture = new ArrayList<>();
-		for (int i=0; i < lengthChapters; i++) {
-			long item = chapters.get(i);
-			Future<Either<Error, Chapter>> chapterFuture = srvChapter.getChapter(item);
-			chaptersFuture.add(chapterFuture);
-		}
-
-		return chaptersFuture;
+		
+		Future<Either<Error, Book>> bookFut = srvBook.getBook( idBook );
+		
+		Future<Either<Error, Sales>> salesFut = srvSales.getSales(idBook);
+		
+//		bookFut.flatMap(
+//				
+//				mapperF( bookE -> salesFut )				
+//				
+//				,ec);
+//		
+//			bookFut.flatMap(
+//				
+//				mapperF( bookE -> srvSales.getSales(idBook) )				
+//				
+//				,ec);		
+		
+		
+		final Future<Tuple2<Either<Error, Book>, Either<Error, Sales>>> zip = bookFut.zip( salesFut );
+		
+		
+		final Future<Either<Error, Summary>> res = zip.flatMap(
+				
+				mapperF(
+						tuple -> {
+					
+						Either<Error, Book> bookE = tuple._1();
+						Either<Error, Sales> salesE = tuple._2();
+						
+						final Book book = bookE.right().get();
+						final Sales sales = salesE.right().get();
+						
+						String idAuthor = book.getIdAuthor();						
+						
+						Future<Either<Error, Summary>> summaryF = srvAuthor.getAuthor(idAuthor).map(								
+								mapperF( 
+										authorE -> {
+											
+											final Author author = authorE.right().get();
+											
+											List<Chapter> chapter = null;
+											Summary summary = new Summary(book, chapter , Optional.of(sales), author);											
+											
+											return new Right<>(summary);
+											
+										}  							
+										
+								),
+								ec );					
+						
+						
+						return summaryF;
+					}
+				
+				)
+				,ec);		
+		
+		return res;
 	}
 
 }
